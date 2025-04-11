@@ -1,29 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>GPS-Aware Panorama Strip</title>
+  <meta charset="UTF-8" />
+  <title>Center Strip Video Stitch</title>
   <style>
     body {
-      margin: 0;
-      font-family: sans-serif;
-      background: #121212;
+      background: #111;
       color: white;
+      font-family: sans-serif;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 10px;
+      margin: 0;
+      padding: 20px;
     }
-    h1 { margin: 10px 0; }
     video, canvas {
-      border: 1px solid #333;
-      margin: 5px;
+      margin: 10px 0;
+      border: 2px solid #333;
     }
     #captureBtn {
-      width: 100px;
-      height: 100px;
+      width: 80px;
+      height: 80px;
       border-radius: 50%;
-      border: 5px solid white;
+      border: 4px solid white;
       background: none;
       margin: 10px;
       transition: 0.2s;
@@ -31,172 +30,139 @@
     #captureBtn.recording {
       border-color: red;
     }
-    #controls {
-      margin: 10px;
-    }
     button {
-      background: #1e88e5;
+      background: #2196f3;
       color: white;
       padding: 8px 16px;
-      margin: 5px;
       border: none;
       border-radius: 4px;
+      margin: 5px;
       cursor: pointer;
     }
     button:hover {
-      background: #1565c0;
+      background: #1976d2;
     }
-    #bottomPreview {
-      overflow-x: auto;
+    canvas#stitched {
       max-width: 100%;
-    }
-    #stitchedPreview {
-      max-height: 150px;
+      max-height: 200px;
+      overflow-x: auto;
     }
   </style>
 </head>
 <body>
-  <h1>Live GPS-Based Strip</h1>
+  <h1>Center Strip Video Stitch</h1>
 
-  <video id="camera" autoplay playsinline width="320" height="240"></video>
+  <video id="preview" autoplay playsinline muted width="320" height="240"></video>
   <button id="captureBtn"></button>
-
-  <div id="controls">
+  <div>
     <button id="downloadBtn">Download Strip</button>
-    <button onclick="resetCanvas()">Clear All</button>
+    <button onclick="reset()">Clear</button>
   </div>
 
-  <div id="bottomPreview">
-    <canvas id="stitchedPreview"></canvas>
-  </div>
+  <canvas id="stitched"></canvas>
 
   <script>
-    const video = document.getElementById('camera');
-    const captureBtn = document.getElementById('captureBtn');
-    const previewCanvas = document.getElementById('stitchedPreview');
-    const previewCtx = previewCanvas.getContext('2d');
-    const downloadBtn = document.getElementById('downloadBtn');
+    const preview = document.getElementById("preview");
+    const captureBtn = document.getElementById("captureBtn");
+    const stitchedCanvas = document.getElementById("stitched");
+    const stitchedCtx = stitchedCanvas.getContext("2d");
 
-    let capturedImages = [];
-    let lastGPS = null;
-    let lastCaptureTime = 0;
-    const MIN_DISTANCE_METERS = 3; // How far to move before next frame (based on camera FOV)
-    const CAPTURE_OFFSET_MS = 100; // 0.1s early capture
-
+    let mediaRecorder;
+    let chunks = [];
     let isRecording = false;
 
     async function startCamera() {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      video.srcObject = stream;
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      preview.srcObject = stream;
     }
 
-    function captureFrame() {
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
-      return canvas;
+    function reset() {
+      stitchedCtx.clearRect(0, 0, stitchedCanvas.width, stitchedCanvas.height);
+      stitchedCanvas.width = 0;
+      chunks = [];
     }
 
-    function updateStitchedPreview() {
-      const totalWidth = capturedImages.reduce((acc, img) => acc + img.canvas.width, 0);
-      const maxHeight = Math.max(...capturedImages.map(img => img.canvas.height));
+    function drawCenterStripFromVideo(videoBlob) {
+      const video = document.createElement("video");
+      video.src = URL.createObjectURL(videoBlob);
+      video.muted = true;
 
-      previewCanvas.width = totalWidth;
-      previewCanvas.height = maxHeight;
+      video.addEventListener("loadeddata", () => {
+        const tempCanvas = document.createElement("canvas");
+        const tempCtx = tempCanvas.getContext("2d");
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        const centerX = Math.floor(width / 2);
 
-      let x = 0;
-      capturedImages.forEach(img => {
-        previewCtx.drawImage(img.canvas, x, 0);
-        x += img.canvas.width;
+        tempCanvas.width = width;
+        tempCanvas.height = height;
+
+        stitchedCanvas.height = height;
+
+        video.currentTime = 0;
+
+        const step = 1 / video.duration * 30; // Adjust sampling rate here
+
+        let frameCount = 0;
+
+        const drawNext = () => {
+          if (video.currentTime >= video.duration) {
+            return;
+          }
+
+          tempCtx.drawImage(video, 0, 0, width, height);
+          const imageData = tempCtx.getImageData(centerX, 0, 1, height);
+
+          stitchedCanvas.width = frameCount + 1;
+          stitchedCtx.putImageData(imageData, frameCount, 0);
+
+          frameCount++;
+          video.currentTime += step;
+        };
+
+        video.ontimeupdate = drawNext;
+        video.play();
       });
     }
 
-    function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
-      const R = 6371e3; // Radius of the earth in m
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLon = (lon2 - lon1) * Math.PI / 180;
-      const a = 
-        Math.sin(dLat/2) * Math.sin(dLat/2) +
-        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-        Math.sin(dLon/2) * Math.sin(dLon/2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-    }
-
-    function maybeCaptureFrame(position) {
-      const now = Date.now();
-
-      if (lastGPS) {
-        const dist = getDistanceFromLatLonInMeters(
-          lastGPS.coords.latitude, lastGPS.coords.longitude,
-          position.coords.latitude, position.coords.longitude
-        );
-
-        if (dist >= MIN_DISTANCE_METERS && now - lastCaptureTime > CAPTURE_OFFSET_MS) {
-          lastCaptureTime = now;
-          lastGPS = position;
-
-          // 0.1s delay to simulate “early” capture due to motion
-          setTimeout(() => {
-            const canvas = captureFrame();
-            capturedImages.push({ canvas, gps: position.coords });
-            updateStitchedPreview();
-            console.log("Captured frame at", position.coords);
-          }, CAPTURE_OFFSET_MS);
-        }
+    captureBtn.onclick = () => {
+      if (!isRecording) {
+        startRecording();
       } else {
-        lastGPS = position;
+        stopRecording();
       }
+    };
+
+    function startRecording() {
+      captureBtn.classList.add("recording");
+      isRecording = true;
+
+      const stream = preview.srcObject;
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: "video/webm" });
+        drawCenterStripFromVideo(blob);
+      };
+
+      chunks = [];
+      mediaRecorder.start();
     }
 
-    function resetCanvas() {
-      capturedImages = [];
-      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    function stopRecording() {
+      captureBtn.classList.remove("recording");
+      isRecording = false;
+      mediaRecorder.stop();
     }
 
-    captureBtn.addEventListener('click', () => {
-      isRecording = !isRecording;
-      captureBtn.classList.toggle('recording');
-    });
-
-    downloadBtn.addEventListener('click', () => {
-      if (capturedImages.length === 0) return;
-      const exportCanvas = document.createElement('canvas');
-      const totalWidth = capturedImages.reduce((acc, img) => acc + img.canvas.width, 0);
-      const maxHeight = Math.max(...capturedImages.map(img => img.canvas.height));
-      exportCanvas.width = totalWidth;
-      exportCanvas.height = maxHeight;
-      const exportCtx = exportCanvas.getContext('2d');
-
-      let x = 0;
-      capturedImages.forEach(img => {
-        exportCtx.drawImage(img.canvas, x, 0);
-        x += img.canvas.width;
-      });
-
-      const link = document.createElement('a');
-      link.download = 'gps_strip.png';
-      link.href = exportCanvas.toDataURL();
+    document.getElementById("downloadBtn").onclick = () => {
+      const link = document.createElement("a");
+      link.download = "strip.png";
+      link.href = stitchedCanvas.toDataURL();
       link.click();
-    });
-
-    // Start watching GPS
-    function startGPS() {
-      navigator.geolocation.watchPosition((pos) => {
-        if (isRecording) maybeCaptureFrame(pos);
-      }, err => {
-        console.error('GPS error:', err);
-      }, {
-        enableHighAccuracy: true,
-        maximumAge: 100,
-        timeout: 5000
-      });
-    }
+    };
 
     startCamera();
-    startGPS();
   </script>
 </body>
 </html>
